@@ -1,0 +1,541 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ==================== 用户 ====================
+model User {
+  id        String   @id @default(cuid())
+  username  String   @unique
+  password  String
+  name      String
+  role      Role
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  issues    Issue[]
+  fabricMoves FabricMove[]
+  cuttingBeds CuttingBed[]
+}
+
+enum Role {
+  BOSS
+  MANAGER
+  FINANCE
+  PURCHASER
+  WORKER
+  CUTTER
+  PACKER
+  WAREHOUSE
+}
+
+// ==================== 辅料 ====================
+model Category {
+  id        String     @id @default(cuid())
+  name      String     @unique
+  icon      String?
+  sortOrder Int        @default(0)
+  materials Material[]
+}
+
+model Material {
+  id             String    @id @default(cuid())
+  code           String    // 允许重复（同编码不同颜色）
+  name           String
+  categoryId     String
+  category       Category  @relation(fields: [categoryId], references: [id])
+  spec           String?
+  color          String?   // 旧字段兼容
+  unit           String    @default("个")
+  unitPrice      Decimal   @default(0) @db.Decimal(10, 4)
+  stock          Decimal   @default(0) @db.Decimal(12, 2)
+  stockDefect    Decimal   @default(0) @db.Decimal(12, 2)
+  stockWaste     Decimal   @default(0) @db.Decimal(12, 2)
+  minStock       Decimal   @default(0) @db.Decimal(12, 2)
+  location       String?
+  supplier       String?
+  usage          String?   // 用量说明，如"每件2个"
+  note           String?   // 备注
+  active         Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  issues         Issue[]
+  bomItems       BomItem[]
+  demands        MaterialDemand[]
+  variants       MaterialVariant[]
+  purchaseOrders PurchaseOrder[]
+}
+
+// 辅料颜色/款式子项（同编码不同颜色独立管库存）
+model MaterialVariant {
+  id          String   @id @default(cuid())
+  materialId  String
+  material    Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  variantName String   // 颜色或变体名称，如"白色"、"红色"
+  stock       Decimal  @default(0) @db.Decimal(12, 2)
+  stockDefect Decimal  @default(0) @db.Decimal(12, 2)
+  stockWaste  Decimal  @default(0) @db.Decimal(12, 2)
+  minStock    Decimal  @default(0) @db.Decimal(12, 2) // 每颜色单独设安全库存
+  unitPrice   Decimal? @db.Decimal(10, 4)
+  note        String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@unique([materialId, variantName])
+  @@index([materialId])
+}
+
+// 辅料流水
+model Issue {
+  id         String      @id @default(cuid())
+  type       IssueType
+  materialId String
+  material   Material    @relation(fields: [materialId], references: [id])
+  quantity   Decimal     @db.Decimal(12, 2)
+  unitPrice  Decimal     @db.Decimal(10, 4)
+  totalPrice Decimal     @db.Decimal(12, 2)
+  userId     String
+  user       User        @relation(fields: [userId], references: [id])
+  styleId    String?     // 关联款号
+  style      Style?      @relation(fields: [styleId], references: [id])
+  bedNo      String?     // 裁床号
+  bundleNo   String?     // 扎号
+  issueMode  String?     // worker/special/packer/warehouse
+  demandId   String?     // 关联需求
+  note       String?
+  createdAt  DateTime    @default(now())
+
+  @@index([materialId, createdAt])
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@index([styleId])
+  @@index([bedNo])
+}
+
+enum IssueType {
+  IN
+  OUT
+  RETURN
+  DEFECT
+  WASTE
+  DEFECT_TO_WASTE
+  DEFECT_RETURN_SUPPLIER
+  RESHELF
+}
+
+// ==================== 布料 ====================
+model Fabric {
+  id          String       @id @default(cuid())
+  code        String       // 允许重复
+  name        String
+  type        FabricType   @default(MAIN)
+  composition String?      // 成分
+  width       Decimal?     @db.Decimal(6, 2) // 门幅
+  unitPriceM  Decimal      @default(0) @db.Decimal(10, 4) // 默认单价
+  dyeCostTotal Decimal     @default(0) @db.Decimal(12, 2) // 累计染费(参考)
+  dyePerUnitM Decimal      @default(0) @db.Decimal(10, 4) // 固定每米染费(染费总额÷入库总量，加权平均)
+  minStock    Decimal      @default(0) @db.Decimal(12, 2)
+  location    String?
+  supplier    String?
+  active      Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  colors      FabricColor[]
+  moves       FabricMove[]
+  bomItems    BomItem[]
+  bedFabrics  BedFabricItem[]
+  // 兼容旧字段
+  color       String?
+  stock       Decimal      @default(0) @db.Decimal(12, 2)
+}
+
+// 布料颜色子项（每个颜色单独管库存）
+model FabricColor {
+  id          String   @id @default(cuid())
+  fabricId    String
+  fabric      Fabric   @relation(fields: [fabricId], references: [id], onDelete: Cascade)
+  colorName   String
+  stock       Decimal  @default(0) @db.Decimal(12, 2)
+  unitPriceM  Decimal? @db.Decimal(10, 4) // 覆盖主记录单价，null则用主记录的
+  dyeCostTotal Decimal @default(0) @db.Decimal(12, 2)
+  dyePerUnitM Decimal  @default(0) @db.Decimal(10, 4) // 固定每米染费
+  note        String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  @@unique([fabricId, colorName])
+  @@index([fabricId])
+}
+
+enum FabricType {
+  MAIN
+  LINING
+  LACE
+  ACCENT
+  OTHER
+}
+
+// 布料流水
+model FabricMove {
+  id         String         @id @default(cuid())
+  type       FabricMoveType
+  fabricId   String
+  fabric     Fabric         @relation(fields: [fabricId], references: [id])
+  colorId    String?        // 关联到具体颜色子项(如果有)
+  colorName  String?        // 记录颜色名(以防颜色被删)
+  quantityM  Decimal        @db.Decimal(12, 2)
+  displayQty Decimal?       @db.Decimal(12, 2)
+  displayUnit String?       @default("米")
+  unitPriceM Decimal        @db.Decimal(10, 4)
+  totalPrice Decimal        @db.Decimal(12, 2)
+  dyeCost    Decimal        @default(0) @db.Decimal(12, 2) // 本次入库染费(仅IN)
+  userId     String
+  user       User           @relation(fields: [userId], references: [id])
+  styleId    String?
+  style      Style?         @relation(fields: [styleId], references: [id])
+  batchNo    String?        // 布料领取批次号 BL...
+  bedNo      String?        // 裁床号 CC...
+  note       String?
+  createdAt  DateTime       @default(now())
+
+  @@index([fabricId, createdAt])
+  @@index([type, createdAt])
+  @@index([batchNo])
+  @@index([styleId])
+}
+
+enum FabricMoveType {
+  IN
+  CUT
+  RETURN
+  DEFECT
+}
+
+// 布料领取批次 BL日期-款号-序号
+model FabricBatch {
+  id        String   @id @default(cuid())
+  batchNo   String   @unique   // BL240422-SS26083-01
+  styleId   String
+  style     Style    @relation(fields: [styleId], references: [id])
+  note      String?
+  createdAt DateTime @default(now())
+  beds      CuttingBed[]
+
+  @@index([styleId])
+}
+
+// ==================== 款式 ====================
+model Style {
+  id          String       @id @default(cuid())
+  code        String       // 款号，允许重复（不同批次）
+  name        String
+  season      String?
+  targetPrice Decimal?     @db.Decimal(10, 2)
+  sizes       String?      // JSON: ["S","M","L","XL","XXL"]
+  laborCost   Decimal      @default(0) @db.Decimal(10, 2)
+  processesJson String?    // JSON 数组 [{name, price}] 工序名+工价
+  packCost    Decimal      @default(0) @db.Decimal(10, 2)  // 每件包装费
+  shipCost    Decimal      @default(0) @db.Decimal(10, 2)  // 每件运费
+  active      Boolean      @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  colors      StyleColor[]
+  fabricBatches FabricBatch[]
+  beds        CuttingBed[]
+  demands     MaterialDemand[]
+  issues      Issue[]
+  fabricMoves FabricMove[]
+}
+
+model StyleColor {
+  id        String    @id @default(cuid())
+  styleId   String
+  style     Style     @relation(fields: [styleId], references: [id], onDelete: Cascade)
+  colorCode String
+  colorName String
+  bomItems  BomItem[]
+  beds      CuttingBed[]
+
+  @@unique([styleId, colorCode])
+}
+
+model BomItem {
+  id           String      @id @default(cuid())
+  styleColorId String
+  styleColor   StyleColor  @relation(fields: [styleColorId], references: [id], onDelete: Cascade)
+  kind         BomKind
+  fabricId     String?
+  fabric       Fabric?     @relation(fields: [fabricId], references: [id])
+  materialId   String?
+  material     Material?   @relation(fields: [materialId], references: [id])
+  role         String?
+  qtyPerPiece  Decimal     @db.Decimal(10, 4)
+  unit         String
+  note         String?
+}
+
+enum BomKind {
+  FABRIC
+  MATERIAL
+}
+
+// ==================== 裁床 ====================
+// 裁床号 CC日期-款号-序号
+model CuttingBed {
+  id           String        @id @default(cuid())
+  bedNo        String        @unique  // CC240422-SS26083-01
+  styleId      String
+  style        Style         @relation(fields: [styleId], references: [id])
+  styleColorId String
+  styleColor   StyleColor    @relation(fields: [styleColorId], references: [id])
+  batchId      String?       // 关联布料批次
+  batch        FabricBatch?  @relation(fields: [batchId], references: [id])
+  totalPieces  Int           @default(0)
+  userId       String
+  user         User          @relation(fields: [userId], references: [id])
+  note         String?
+  status       String     @default("cutting") // cutting/done
+  // 成本
+  fabricCost      Decimal    @default(0) @db.Decimal(12, 2)
+  materialCost    Decimal    @default(0) @db.Decimal(12, 2)
+  laborCost       Decimal    @default(0) @db.Decimal(12, 2)
+  packCost        Decimal    @default(0) @db.Decimal(12, 2)
+  shipCost        Decimal    @default(0) @db.Decimal(12, 2)
+  defectWasteCost Decimal    @default(0) @db.Decimal(12, 2)
+  totalCost       Decimal    @default(0) @db.Decimal(12, 2)
+  unitCost        Decimal    @default(0) @db.Decimal(10, 2)
+  createdAt    DateTime      @default(now())
+  sizeItems    BedSizeItem[]
+  fabricItems  BedFabricItem[]
+  bundles      Bundle[]
+  demands      MaterialDemand[]
+
+  @@index([styleId, createdAt])
+  @@index([bedNo])
+}
+
+// 尺码明细
+model BedSizeItem {
+  id        String     @id @default(cuid())
+  bedId     String
+  bed       CuttingBed @relation(fields: [bedId], references: [id], onDelete: Cascade)
+  size      String
+  quantity  Int
+}
+
+// 布料用量明细
+model BedFabricItem {
+  id          String     @id @default(cuid())
+  bedId       String
+  bed         CuttingBed @relation(fields: [bedId], references: [id], onDelete: Cascade)
+  fabricId    String
+  fabric      Fabric     @relation(fields: [fabricId], references: [id])
+  fabricColorId String?  // 关联到具体颜色子项(用于精确计算成本+染费)
+  role        String
+  layerLength Decimal    @db.Decimal(10, 2)
+  layerCount  Int
+  totalUsed   Decimal    @db.Decimal(12, 2)
+  unitPriceM  Decimal    @db.Decimal(10, 4)
+  totalCost   Decimal    @db.Decimal(12, 2)
+}
+
+// 扎号（第1扎、第2扎...）
+model Bundle {
+  id        String     @id @default(cuid())
+  bundleNo  String     // 扎号：1, 2, 3...
+  bedId     String
+  bed       CuttingBed @relation(fields: [bedId], references: [id], onDelete: Cascade)
+  color     String?    // 颜色
+  size      String?    // 尺码
+  quantity  Int        @default(0) // 该扎件数
+  status    String     @default("pending") // pending/done
+  note      String?
+  createdAt DateTime   @default(now())
+
+  @@index([bedId])
+}
+
+// 辅料需求（裁床产生，不自动扣减）
+model MaterialDemand {
+  id          String     @id @default(cuid())
+  bedId       String
+  bed         CuttingBed @relation(fields: [bedId], references: [id], onDelete: Cascade)
+  materialId  String
+  material    Material   @relation(fields: [materialId], references: [id])
+  styleId     String
+  style       Style      @relation(fields: [styleId], references: [id])
+  bedNo       String
+  qtyNeeded   Decimal    @db.Decimal(12, 2)
+  qtyIssued   Decimal    @default(0) @db.Decimal(12, 2)
+  unit        String
+  role        String?
+  fulfilled   Boolean    @default(false)
+  createdAt   DateTime   @default(now())
+
+  @@index([bedId])
+  @@index([materialId])
+  @@index([styleId])
+  @@index([fulfilled])
+}
+
+// ==================== 采购 ====================
+model Purchase {
+  id         String         @id @default(cuid())
+  orderNo    String         @unique
+  supplier   String
+  category   String         @default("FABRIC_MATERIAL")
+  totalAmount Decimal       @default(0) @db.Decimal(12, 2)
+  invoiceNo  String?
+  invoiceUrl String?
+  invoiceAmt Decimal?       @db.Decimal(12, 2)
+  hasInvoice Boolean        @default(false)
+  invoiceVerified Boolean   @default(false)
+  status     String         @default("pending")
+  purchaseDate DateTime     @default(now())
+  note       String?
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+  items      PurchaseItem[]
+}
+
+model PurchaseItem {
+  id          String   @id @default(cuid())
+  purchaseId  String
+  purchase    Purchase @relation(fields: [purchaseId], references: [id], onDelete: Cascade)
+  itemName    String
+  quantity    Decimal  @db.Decimal(12, 2)
+  unit        String
+  unitPrice   Decimal  @db.Decimal(10, 4)
+  totalPrice  Decimal  @db.Decimal(12, 2)
+}
+
+// ==================== 电商结算 ====================
+model EcSettlement {
+  id            String   @id @default(cuid())
+  platform      String
+  site          String?
+  yearMonth     String
+  currency      String   @default("USD")
+  exchangeRate  Decimal  @default(1) @db.Decimal(10, 4)
+  grossSales    Decimal  @default(0) @db.Decimal(14, 2)
+  refunds       Decimal  @default(0) @db.Decimal(14, 2)
+  commission    Decimal  @default(0) @db.Decimal(14, 2)
+  fbaFee        Decimal  @default(0) @db.Decimal(14, 2)
+  adsFee        Decimal  @default(0) @db.Decimal(14, 2)
+  otherFee      Decimal  @default(0) @db.Decimal(14, 2)
+  netReceipt    Decimal  @default(0) @db.Decimal(14, 2)
+  inventoryUnits Int?
+  soldUnits     Int?
+  netReceiptCny Decimal? @db.Decimal(14, 2)
+  note          String?
+  reportFile    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([platform, site, yearMonth])
+  @@index([yearMonth])
+}
+
+// ==================== 财务凭证 ====================
+model Expense {
+  id            String   @id @default(cuid())
+  category      String   // 大类
+  subCategory   String   // 小类
+  amount        Decimal  @db.Decimal(12, 2)
+  payStatus     String   @default("已付款") // 已付款/未付款
+  payMethod     String   @default("公账") // 公账/私账
+  invoiceStatus String   @default("未开票") // 已开票/未开票
+  invoiceImages String?  // JSON: 发票照片
+  supplier      String?
+  description   String?
+  note          String?
+  expenseDate   DateTime @default(now())
+  images        String?  // JSON: 收据/凭证照片
+  createdBy     String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([category, expenseDate])
+  @@index([expenseDate])
+  @@index([payMethod])
+  @@index([invoiceStatus])
+}
+
+// ==================== 电商报税 ====================
+// 平台+店铺（自定义）
+model EcShop {
+  id        String   @id @default(cuid())
+  platform  String   // Amazon / Wildberries / TikTok / Shein / 自定义
+  shopName  String   // 店铺名称
+  currency  String   @default("USD") // 默认币种
+  note      String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  records   EcMonthlyRecord[]
+
+  @@unique([platform, shopName])
+  @@index([platform])
+}
+
+// 月度结算记录
+model EcMonthlyRecord {
+  id              String   @id @default(cuid())
+  shopId          String
+  shop            EcShop   @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  yearMonth       String   // 2026-04
+  // 收入
+  grossSales      Decimal  @default(0) @db.Decimal(14, 2) // 总销售额（外币）
+  refunds         Decimal  @default(0) @db.Decimal(14, 2) // 退款（外币）
+  platformFee     Decimal  @default(0) @db.Decimal(14, 2) // 平台费用（外币）
+  adsFee          Decimal  @default(0) @db.Decimal(14, 2) // 广告费（外币）
+  otherFee        Decimal  @default(0) @db.Decimal(14, 2) // 其他费用（外币）
+  netIncome       Decimal  @default(0) @db.Decimal(14, 2) // 净收入（外币）= gross - refunds - fees
+  // 订单
+  orderCount      Int      @default(0)
+  returnCount     Int      @default(0)
+  // 提款与汇率
+  currency        String   @default("USD")
+  withdrawAmount  Decimal  @default(0) @db.Decimal(14, 2) // 提款外币金额
+  cnyAmount       Decimal  @default(0) @db.Decimal(14, 2) // 人民币到账金额
+  exchangeRate    Decimal  @default(0) @db.Decimal(10, 4) // 汇率
+  // 凭证图片
+  incomeImages    String?  // JSON: 收入截图
+  orderImages     String?  // JSON: 订单截图
+  withdrawImages  String?  // JSON: 提款凭证
+  note            String?
+  createdBy       String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([shopId, yearMonth])
+  @@index([yearMonth])
+}
+
+// 在途采购单（已下单未到货） - 全员可见
+model PurchaseOrder {
+  id           String   @id @default(cuid())
+  materialId   String
+  material     Material @relation(fields: [materialId], references: [id], onDelete: Cascade)
+  variantName  String?  // 颜色子项名（无颜色填 null）
+  quantity     Decimal  @db.Decimal(12, 2)
+  purchaseDate DateTime @default(now())
+  expectedDate DateTime?
+  note         String?
+  status       String   @default("在途")
+  receivedQty  Decimal  @default(0) @db.Decimal(12, 2)
+  createdBy    String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  @@index([materialId, status])
+  @@index([status, expectedDate])
+}
+
+// 工序名称库（工价工序名下拉候选）
+model ProcessName {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+}
